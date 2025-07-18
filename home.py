@@ -21,44 +21,42 @@ logging.StreamHandler()
 )
 logger = logging.getLogger(__name__)
 @dataclass
-class PipelineConfig:
-"""Configuration for the data pipeline."""
-raw_data_path: str = "data/raw"
-processed_data_path: str = "data/processed"
-quality_report_path: str = "data_quality_report.csv"
-timezone: str = "Asia/Kolkata"
-batch_size: int = 10000
-# Calibration parameters (example values)
-calibration_params: Dict[str, Dict[str, float]] = None
-# Expected value ranges for anomaly detection
-value_ranges: Dict[str, Tuple[float, float]] = None
-def __post_init__(self):
-if self.calibration_params is None:
-self.calibration_params = {
-'temperature': {'multiplier': 1.0, 'offset': 0.0},
-'humidity': {'multiplier': 1.0, 'offset': 0.0},
-'soil_moisture': {'multiplier': 1.0, 'offset': 0.0},
-'light_intensity': {'multiplier': 1.0, 'offset': 0.0}
-}
-if self.value_ranges is None:
-self.value_ranges = {
-'temperature': (-20.0, 60.0),
-'humidity': (0.0, 100.0),
-'soil_moisture': (0.0, 100.0),
-'light_intensity': (0.0, 100000.0)
-}
-class DataIngestionEngine:
-"""Handles data ingestion from raw Parquet files."""
-def __init__(self, config: PipelineConfig):
-self.config = config
-self.conn = duckdb.connect(':memory:')
-self.checkpoint_file = "ingestion_checkpoint.json"
-self.stats = {
-'files_read': 0,
-'records_processed': 0,
-'records_skipped': 0,
-'files_failed': 0
-}
+class PipelineSettings:
+    """Settings for the agri data workflow."""
+    input_dir: str = "data/raw"
+    output_dir: str = "data/processed"
+    report_file: str = "data_quality_report.csv"
+    local_timezone: str = "Asia/Kolkata"
+    chunk_size: int = 10000
+    calibration: Dict[str, Dict[str, float]] = None
+    expected_ranges: Dict[str, Tuple[float, float]] = None
+    def __post_init__(self):
+        if self.calibration is None:
+            self.calibration = {
+                'temperature': {'mult': 1.0, 'off': 0.0},
+                'humidity': {'mult': 1.0, 'off': 0.0},
+                'soil_moisture': {'mult': 1.0, 'off': 0.0},
+                'light_intensity': {'mult': 1.0, 'off': 0.0}
+            }
+        if self.expected_ranges is None:
+            self.expected_ranges = {
+                'temperature': (-20.0, 60.0),
+                'humidity': (0.0, 100.0),
+                'soil_moisture': (0.0, 100.0),
+                'light_intensity': (0.0, 100000.0)
+            }
+class RawDataLoader:
+    """Handles loading of raw Parquet sensor files."""
+    def __init__(self, settings: PipelineSettings):
+        self.settings = settings
+        self.duck = duckdb.connect(':memory:')
+        self.checkpoint_path = "ingestion_checkpoint.json"
+        self.metrics = {
+            'files_loaded': 0,
+            'rows_loaded': 0,
+            'rows_skipped': 0,
+            'files_failed': 0
+        }
 def load_checkpoint(self) -> Dict:
 """Load ingestion checkpoint for incremental loading."""
 if os.path.exists(self.checkpoint_file):
@@ -225,12 +223,12 @@ checkpoint['last_processed_date'] = datetime.now().isoformat()
 self.save_checkpoint(checkpoint)
 logger.info(f"Ingestion completed. Stats: {self.stats}")
 return ingested_data
-class DataTransformationEngine:
-"""Handles data transformation and enrichment."""
-def __init__(self, config: PipelineConfig):
-self.config = config
-self.conn = duckdb.connect(':memory:')
-self.tz = pytz.timezone(config.timezone)
+class SensorDataTransformer:
+    """Handles transformation and enrichment of sensor data."""
+    def __init__(self, settings: PipelineSettings):
+        self.settings = settings
+        self.duck = duckdb.connect(':memory:')
+        self.tz = pytz.timezone(settings.local_timezone)
 def clean_data(self, df: pd.DataFrame) -> pd.DataFrame:
 """Clean data - remove duplicates, handle missing values, detect outliers."""
 logger.info("Starting data cleaning...")
@@ -360,11 +358,11 @@ df = self.detect_anomalies(df)
 df = self.compute_aggregations(df)
 logger.info("Data transformation completed")
 return df
-class DataQualityValidator:
-"""Validates data quality and generates reports."""
-def __init__(self, config: PipelineConfig):
-self.config = config
-self.conn = duckdb.connect(':memory:')
+class QualityAssessor:
+    """Validates data quality and creates reports."""
+    def __init__(self, settings: PipelineSettings):
+        self.settings = settings
+        self.duck = duckdb.connect(':memory:')
 def validate_data_types(self, df: pd.DataFrame) -> Dict:
 """Validate data types."""
 logger.info("Validating data types...")
@@ -517,12 +515,12 @@ report_df = pd.concat([report_df, pd.DataFrame([{
 report_df.to_csv(self.config.quality_report_path, index=False)
 logger.info(f"Quality report saved to {self.config.quality_report_path}")
 return report
-class DataStorageEngine:
-"""Handles data loading and storage optimization."""
-def __init__(self, config: PipelineConfig):
-self.config = config
-self.processed_path = Path(config.processed_data_path)
-self.processed_path.mkdir(parents=True, exist_ok=True)
+class AnalyticsDataSaver:
+    """Handles saving and optimizing processed data."""
+    def __init__(self, settings: PipelineSettings):
+        self.settings = settings
+        self.out_path = Path(settings.output_dir)
+        self.out_path.mkdir(parents=True, exist_ok=True)
 def optimize_for_analytics(self, df: pd.DataFrame) -> pd.DataFrame:
 """Optimize data for analytical queries."""
 logger.info("Optimizing data for analytics...")
@@ -594,67 +592,66 @@ compression='snappy',
 index=False
 )
 logger.info("Summary tables created")
-class AgricultureDataPipeline:
-"""Main pipeline orchestrator."""
-def __init__(self, config: PipelineConfig):
-self.config = config
-self.ingestion_engine = DataIngestionEngine(config)
-self.transformation_engine = DataTransformationEngine(config)
-self.quality_validator = DataQualityValidator(config)
-self.storage_engine = DataStorageEngine(config)
-def run_pipeline(self, incremental: bool = True):
-"""Run the complete data pipeline."""
-logger.info("Starting Agriculture Data Pipeline...")
-try:
-# Step 1: Data Ingestion
-logger.info("Step 1: Data Ingestion")
-raw_dataframes = self.ingestion_engine.ingest_batch()
-if not raw_dataframes:
-logger.warning("No data to process")
-return
-# Combine all dataframes
-combined_df = pd.concat(raw_dataframes, ignore_index=True)
-logger.info(f"Combined dataset size: {len(combined_df)} records")
-# Step 2: Data Transformation
-logger.info("Step 2: Data Transformation")
-transformed_df = self.transformation_engine.transform_data(combined_df)
-# Step 3: Data Quality Validation
-logger.info("Step 3: Data Quality Validation")
-quality_report = self.quality_validator.generate_quality_report(transformed_df)
-# Step 4: Data Storage
-logger.info("Step 4: Data Storage")
-optimized_df = self.storage_engine.optimize_for_analytics(transformed_df)
-self.storage_engine.save_partitioned_data(optimized_df)
-self.storage_engine.create_summary_tables(optimized_df)
-# Log final statistics
-logger.info("Pipeline completed successfully!")
-logger.info(f"Processed {len(optimized_df)} records")
-logger.info(f"Ingestion stats: {self.ingestion_engine.stats}")
-logger.info(f"Quality report saved to: {self.config.quality_report_path}")
-logger.info(f"Processed data saved to: {self.config.processed_data_path}")
-return {
-'status': 'success',
-'records_processed': len(optimized_df),
-'ingestion_stats': self.ingestion_engine.stats,
-'quality_report': quality_report
-}
-except Exception as e:
-logger.error(f"Pipeline failed: {e}")
-raise
+class SmartAgriPipeline:
+    """Main workflow controller."""
+    def __init__(self, settings: PipelineSettings):
+        self.settings = settings
+        self.loader = RawDataLoader(settings)
+        self.transformer = SensorDataTransformer(settings)
+        self.assessor = QualityAssessor(settings)
+        self.saver = AnalyticsDataSaver(settings)
+    def execute(self, incremental: bool = True):
+        logger.info("Starting Smart Agriculture Pipeline...")
+        try:
+            # Step 1: Load Data
+            logger.info("Step 1: Loading Data")
+            raw_frames = self.loader.ingest_batch()
+            if not raw_frames:
+                logger.warning("No sensor data to process")
+                return
+            # Merge all frames
+            merged = pd.concat(raw_frames, ignore_index=True)
+            logger.info(f"Merged dataset size: {len(merged)} records")
+            # Step 2: Transform
+            logger.info("Step 2: Transforming Data")
+            transformed = self.transformer.transform_data(merged)
+            # Step 3: Assess Quality
+            logger.info("Step 3: Assessing Data Quality")
+            report = self.assessor.generate_quality_report(transformed)
+            # Step 4: Save
+            logger.info("Step 4: Saving Data")
+            optimized = self.saver.optimize_for_analytics(transformed)
+            self.saver.save_partitioned_data(optimized)
+            self.saver.create_summary_tables(optimized)
+            # Log summary
+            logger.info("Pipeline finished successfully!")
+            logger.info(f"Rows processed: {len(optimized)}")
+            logger.info(f"Loader stats: {self.loader.metrics}")
+            logger.info(f"Quality report at: {self.settings.report_file}")
+            logger.info(f"Output data at: {self.settings.output_dir}")
+            return {
+                'status': 'success',
+                'rows_processed': len(optimized),
+                'loader_stats': self.loader.metrics,
+                'quality_report': report
+            }
+        except Exception as err:
+            logger.error(f"Pipeline failed: {err}")
+            raise
 def main():
-"""Main entry point for the pipeline."""
-# Create configuration
-config = PipelineConfig()
-# Create required directories
-Path(config.raw_data_path).mkdir(parents=True, exist_ok=True)
-Path(config.processed_data_path).mkdir(parents=True, exist_ok=True)
-# Initialize and run pipeline
-pipeline = AgricultureDataPipeline(config)
-try:
-result = pipeline.run_pipeline(incremental=True)
-print(f"Pipeline completed: {result}")
-except Exception as e:
-print(f"Pipeline failed: {e}")
-sys.exit(1)
+    """Entry point for the SmartAgri workflow."""
+    # Setup settings
+    settings = PipelineSettings()
+    # Ensure directories
+    Path(settings.input_dir).mkdir(parents=True, exist_ok=True)
+    Path(settings.output_dir).mkdir(parents=True, exist_ok=True)
+    # Run pipeline
+    workflow = SmartAgriPipeline(settings)
+    try:
+        result = workflow.execute(incremental=True)
+        print(f"Workflow finished: {result}")
+    except Exception as err:
+        print(f"Workflow failed: {err}")
+        sys.exit(1)
 if __name__ == "__main__":
-main()
+    main()
